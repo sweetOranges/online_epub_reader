@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<script type="text/javascript" src="https://cdn.bootcdn.net/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+	<title></title>
+	<style type="text/css">
+		#menu {
+			position: fixed;
+		}
+		#left {
+			position: fixed;top:40%;left:400px;z-index: 9999;font-size: 24px;font-weight: bold;cursor: pointer;
+		}
+		#right {
+			position: fixed;top:40%;right:0;z-index: 9999;font-size: 24px;font-weight: bold;cursor: pointer;
+		}
+	</style>
+</head>
+<body>
+	<div id="menu"></div>
+	<div id="left" onclick="next_page(-1)">&lt;</div>
+	<div id="right" onclick="next_page(1)">&gt;</div>
+	<div id="content" style="position: absolute; left:400px;"></div>
+</body>
+<script type="text/javascript">
+
+const parser = new DOMParser();
+
+window.EPUB_ZIP = null;
+window.EPUB_PROPS =  {
+	manifest: {},
+	spin: {
+		toc: '',
+		refs: []
+	},
+	toc: [],
+	idx: 0
+};
+
+async function load(file)
+{
+	window.EPUB_ZIP = await JSZip.loadAsync(file);
+
+	var fullPathContent = await readFile('OEBPS/content.opf');
+	var fullPathEle = buildEle(fullPathContent);
+
+	// load all manifest
+	var manifestItems = fullPathEle.querySelectorAll('manifest item');
+	for(var i = 0; i < manifestItems.length; i++)
+	{
+		var id = manifestItems[i].attributes['id'].value;
+		var href = manifestItems[i].attributes['href'].value;
+		var type = manifestItems[i].attributes['media-type'].value;
+		EPUB_PROPS.manifest[id] = {href: href, type: type};
+	}
+	// load spin ele
+	var spinEle = fullPathEle.querySelector('spine');
+	EPUB_PROPS.spin.toc = spinEle.attributes['toc'].value;
+	//load all itemrefs
+	var itemrefs = fullPathEle.querySelectorAll('spine itemref');
+	for(var i = 0; i < itemrefs.length; i++)
+	{
+		var idref = itemrefs[i].attributes['idref'].value;
+		EPUB_PROPS.spin.refs.push(idref);
+	}
+	var tocContent = await readFile('OEBPS/toc.ncx');
+	var tocDoc = buildDoc(tocContent);
+	var points = tocDoc.querySelectorAll('navMap navPoint');
+	for(var i = 0; i < points.length; i++)
+	{
+		var label = points[i].querySelector('navLabel>text').textContent;
+		var herf = points[i].querySelector('content').attributes['src'].value;
+		console.log(label, herf)
+		EPUB_PROPS.toc.push({label: label, href: href});
+	}
+
+	console.log(EPUB_PROPS)
+	render_menu()
+	render_content()
+}
+
+function next_page(offset)
+{
+	EPUB_PROPS.idx+=offset;
+	render_content()
+}
+
+function render_menu()
+{
+	var htmls = EPUB_PROPS.toc.map((item, idx) => {
+		return `<li data-id="${idx}" data-href="${item.href}" onclick="menu_click(this)">${item.label}</li>`
+	});
+	document.querySelector('#menu').innerHTML = '<ul>' + htmls.join('') + '</ul>';
+}
+
+function menu_click(item)
+{
+	var idx = item.dataset.id;
+	EPUB_PROPS.idx = idx;
+	render_content()
+}
+
+
+function readFile(path, type="string")
+{
+	console.log('readFile', path)
+	return window.EPUB_ZIP.file(path).async(type);
+}
+
+function buildEle(content)
+{
+	var shadowEle = document.createElement('div')
+	shadowEle.innerHTML = content;
+	return shadowEle;
+}
+
+
+function buildDoc(content)
+{
+	return parser.parseFromString(content, "application/xml");
+}
+
+
+
+function fixDir(base, path)
+{
+	var baseDirs = base.split('/');
+	var curDirs = path.split('/');
+	if (curDirs.length == 0)
+	{
+		return path;
+	}
+	if (curDirs[0] == '.')
+	{
+		baseDirs.pop();
+		curDirs.shift();
+		return baseDirs.join('/') + '/' + curDirs.join('/');
+	}
+	if (curDirs[0] == '..')
+	{
+		baseDirs.pop();
+		baseDirs.pop();
+		curDirs.shift();
+		return baseDirs.length == 0 ? curDirs.join('/') : baseDirs.join('/') + curDirs.join('/');
+	}
+	return path;
+}
+
+
+async function render_content()
+{
+	var path = EPUB_PROPS.manifest[EPUB_PROPS.spin.refs[EPUB_PROPS.idx]];
+	var content = await readFile('OEBPS/' + path.href);
+	var doc = buildDoc(content);
+	var styleEle = document.querySelector('#style-epub');
+	if (!styleEle)
+	{
+		styleEle = document.createElement('style');
+		styleEle.id = 'style-epub';
+		document.querySelector('head').appendChild(styleEle);
+	}
+	styleEle.innerHTML = '';
+
+	var cssEles = doc.querySelectorAll('link[type="text/css"]');
+	for(var i = 0; i < cssEles.length; i++)
+	{
+		var href = cssEles[i].attributes['href'].value;
+		var text = await readFile('OEBPS/' + fixDir(path.href, href));
+		styleEle.innerHTML += text;
+	}
+
+	var contentImages = doc.querySelectorAll('img');
+
+	for(var i = 0; i < contentImages.length; i++)
+	{
+		var src = contentImages[i].attributes['src'].value;
+		contentImages[i].src = '';
+		contentImages[i].dataset['src'] = fixDir(path.href, src);
+	}
+	document.querySelector('#content').innerHTML = doc.querySelector('body').innerHTML;
+	lazyLoadImg();
+}
+
+function getTop(e) {
+    var T = e.offsetTop;
+    while(e = e.offsetParent) {
+        T += e.offsetTop;
+    }
+    return T;
+}
+
+async function lazyLoadImg()
+{
+	var imgs = document.querySelectorAll('img');
+	var H = document.documentElement.clientHeight;
+    var S = document.documentElement.scrollTop || document.body.scrollTop;
+    for (var i = 0; i < imgs.length; i++) {
+        if (H + S > getTop(imgs[i])) {
+        	if (imgs[i].load) continue;
+        	var src = imgs[i].getAttribute('data-src');
+        	var data = await readFile('OEBPS/' + src, 'base64');
+            imgs[i].src = 'data:image/jpeg;base64,' + data;
+            imgs[i].load = true;
+        }
+    }
+}
+
+window.onscroll = lazyLoadImg;
+
+</script>
+</html>
